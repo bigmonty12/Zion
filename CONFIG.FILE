@@ -26,17 +26,14 @@ metadata_file_path="/mnt/ix2/Sandbox/bigmonty/Jace_Project/metadata-jace.txt"
 
 # directory where artifacts will be stored
 # directory should be writeable (chmod 777 directory)
-artifacts_dir="/mnt/ix2/Sandbox/bigmonty/Jace_Project/qiime-pipeline/reverse"
+artifacts_dir=""
 
 # prefix for artifacts that identifies data set
-data_set="r-jace-16S"
-
-# percent identity desired
-percent="97"
+data_set=""
 
 # path to reference sequences used to cluster 
-ref_seqs="/mnt/ix2/Sandbox/bigmonty/ref_greengenes/gg_qiime_inputs/${percent}_otus.qza"
+ref_seqs="/mnt/ix2/Sandbox/bigmonty/99-SILVA-seqs.qza"
 
-# path to reference taxonomy used to classify
-ref_tax="${percent}_ref-taxonomy.qza"
+# path to reference taxonomy classifier used to classify
+ref_tax="/mnt/ix2/Sandbox/bigmonty/99-SILVA-classifier.qza"
 
