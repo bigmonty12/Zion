@@ -1,0 +1,30 @@
+# mounting for Docker
+mount="/mnt/ix2:/mnt/ix2"
+
+# path to metadata file (should be a .tsv); first column should be labeled sampleid or sample-id
+# characters in file must be letters, numbers, -, or . (avoid spaces)
+metadata_file_path="/mnt/ix2/Sandbox/bigmonty/Jace_Project/metadata-jace.txt"
+
+# directory where artifacts will be stored
+# directory should be writeable (chmod 777 directory)
+artifacts_dir="/mnt/ix2/Sandbox/bigmonty/Jace_Project/merged-pipeline"
+
+# prefix for artifacts that identifies data set
+data_set="merged-jace-16S"
+
+# path to input tables
+table_1="/mnt/ix2/Sandbox/bigmonty/Jace_Project/qiime-pipeline/artifacts/jace-16S-table.qza"
+table_2="/mnt/ix2/Sandbox/bigmonty/Jace_Project/qiime-pipeline/reverse/artifacts/r-jace-16S-table.qza"
+
+# path to input sequences
+seqs_1="/mnt/ix2/Sandbox/bigmonty/Jace_Project/qiime-pipeline/reverse/artifacts/r-jace-16S-rep-seqs.qza"
+seqs_2="/mnt/ix2/Sandbox/bigmonty/Jace_Project/qiime-pipeline/artifacts/jace-16S-rep-seqs.qza"
+# percent identity desired
+percent="97"
+
+# path to reference sequences used to cluster 
+ref_seqs="/mnt/ix2/Sandbox/bigmonty/ref_greengenes/gg_qiime_inputs/${percent}_otus.qza"
+
+# path to reference taxonomy used to classify
+ref_tax="${percent}_ref-taxonomy.qza"
+

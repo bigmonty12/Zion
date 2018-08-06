@@ -1,0 +1,285 @@
+#!/bin/sh
+
+source CONFIG.FILE
+
+# qiime container name
+qiime="qiime2/core:2018.6"
+
+
+# step 1: make manifest
+
+cut -f ${sample_id_column_number},${run_id_column_number} $metadata_file_path >COLUMNS.txt
+
+echo sample-id,absolute-filepath,direction > ${artifacts_dir}/MANIFEST
+
+for i in $data_files_path/*${fastq_End}
+        # find sample_id from $i
+        do var=$i
+        var=${var#${data_files_path}/}
+        #var=${var%${fastq_End}}
+        var=$(echo ${var} | cut -c ${ch_beg}-${ch_end})
+        id=$(grep -w $var COLUMNS.txt | while read v k; do echo $v; done)
+        # echo $i
+        echo $id,$i >> ${artifacts_dir}/MANIFEST
+        done
+
+sed -i '/^,/ d' ${artifacts_dir}/MANIFEST
+sed -i "/1${fastq_End}/ s/$/,forward/" ${artifacts_dir}/MANIFEST
+sed -i "/2${fastq_End}/ s/$/,reverse/" ${artifacts_dir}/MANIFEST
+
+
+# step 2: import filtered data
+
+ docker run -i -v $mount $qiime /bin/sh -c " \
+	cd $artifacts_dir && \
+	qiime tools import \
+	--type 'SampleData[PairedEndSequencesWithQuality]' \
+	--input-path MANIFEST \
+	--output-path ${data_set}-demux.qza \
+	--source-format PairedEndFastqManifestPhred33 && \
+	qiime demux summarize \
+	--i-data ${data_set}-demux.qza \
+	--o-visualization ${data_set}-demux.qzv && \
+	apt-get update && \
+	apt-get install unzip && \
+	unzip ${data_set}-demux.qzv -d demux"
+
+# step 3: find DADA2 parameters
+
+# find 90% of subsample size
+subsample_size="$(sed '2q;d' ${artifacts_dir}/demux/*/data/forward-seven-number-summaries.csv | tr ',' '\n' | sed '1d' | awk 'NR==1{print $1}')"
+
+point_nine="$(awk "BEGIN {print 0.8*$subsample_size}")"
+
+# extract subsample number; transpose data; print line and count of nt positions < 90% sample size past nt 40
+bad_count_f="$(sed '2q;d' ${artifacts_dir}/demux/*/data/forward-seven-number-summaries.csv | tr ',' '\n' | sed '1d' | awk -v point_nine="$point_nine" '$1 < point_nine {print NR, $0}' | awk '$1 > 40' | awk 'NR==1{print $1}')"
+
+bad_count_r="$(sed '2q;d' ${artifacts_dir}/demux/*/data/reverse-seven-number-summaries.csv | tr ',' '\n' | sed '1d' | awk -v point_nine="$point_nine" '$1 < point_nine {print NR, $0}' | awk '$1 > 40' | awk 'NR==1{print $1}')"
+
+# extract median Q scores at each position and make column
+sed '6q;d' ${artifacts_dir}/demux/*/data/forward-seven-number-summaries.csv | tr ',' '\n' | sed '1d' > forward-median-number-summary
+
+sed '6q;d' ${artifacts_dir}/demux/*/data/reverse-seven-number-summaries.csv | tr ',' '\n' | sed '1d' > reverse-median-number-summary
+
+# create trim position variables
+trim_f="$(awk -f slid_window.awk forward-median-number-summary | awk '$1 < 25 {print NR, $0}' | awk '$1 < 30' | awk 'END{print $1}')"
+
+if [ -z "$trim_f" ]; then trim_f="0"; fi
+
+trim_r="$(awk -f slid_window.awk reverse-median-number-summary | awk '$1 < 25 {print NR, $0}' | awk '$1 < 30' | awk 'END{print $1}')"
+
+if [ -z "$trim_r" ]; then trim_r="0"; fi
+
+# create trunc position variables
+trunc_f="$(awk -f slid_window.awk forward-median-number-summary | awk '$1 < 25 {print NR, $0}' | awk '$1 > 30' | awk 'NR==1{print $1}')"
+
+if [ -z "$trunc_f" ] && [ -z "$bad_count_f" ]; then trunc_f="0"; elif [ -z "$trunc_f" ]; then trunc_f="$bad_count_f"; elif [[ bad_count_f -lt trunc_f ]]; then trunc_f="$bad_count_f"; fi
+
+trunc_r="$(awk -f slid_window.awk reverse-median-number-summary | awk '$1 < 25 {print NR, $0}' | awk '$1 > 30' | awk 'NR==1{print $1}')"
+
+if [ -z "$trunc_r" ] && [ -z "$bad_count_r" ]; then trunc_r="0"; elif [ -z "$trunc_r" ]; then trunc_r="$bad_count_r"; elif [[ bad_count_r -lt trunc_r ]]; then trunc_r="$bad_count_r"; fi
+
+# step 4: DADA2 (paired end)
+
+docker run -m 160g --memory-swap -1 -t -v $mount $qiime /bin/sh -c " \
+	cd $artifacts_dir && \
+	qiime dada2 denoise-paired \
+	--verbose  \
+	--i-demultiplexed-seqs ${data_set}-demux.qza \
+	--p-trunc-len-f $trunc_f \
+	--p-trunc-len-r $trunc_r \
+	--p-trim-left-f $trim_f \
+	--p-trim-left-r $trim_r \
+	--o-table ${data_set}-table.qza \
+	--o-representative-sequences ${data_set}-rep-seqs.qza \
+	--o-denoising-stats ${data_set}-denoising-stats.qza && \
+	qiime feature-table summarize \
+        --i-table ${data_set}-table.qza \
+        --o-visualization ${data_set}-table.qzv && \
+	qiime metadata tabulate \
+	--m-input-file ${data_set}-denoising-stats.qza \
+	--o-visualization ${data_set}-denoising-stats.qzv && \
+	apt-get update && \
+        apt-get install unzip && \
+        unzip ${data_set}-table.qzv -d unzipped-table"
+
+#sampling depth
+sampling=$(awk -F',' 'END{print $2}' ${artifacts_dir}/unzipped-table/*/data/sample-frequency-detail.csv )
+sampling_depth=$(printf "%.0f\n" "$sampling")
+
+# steps 5,6,7,8,9: cluster, phylogeny, core-metrics, classify, barplot
+
+docker run -i -v $mount $qiime /bin/sh -c " \
+	cd $artifacts_dir && \
+	qiime vsearch cluster-features-open-reference \
+	--i-table ${data_set}-table.qza \
+	--i-sequences ${data_set}-rep-seqs.qza \
+	--i-reference-sequences $ref_seqs \
+	--p-perc-identity 0.99 \
+	--p-strand both \
+	--o-clustered-table ${data_set}-table-or-99.qza \
+	--o-clustered-sequences ${data_set}-rep-seqs-or-99.qza \
+	--o-new-reference-sequences ${data_set}-new-ref-seqs-or-99 && \
+	qiime feature-table filter-features \
+	--i-table ${data_set}-table-or-99.qza \
+	--p-min-frequency 2 \
+	--o-filtered-table ${data_set}-filtered-table-or-99.qza && \
+	qiime feature-table tabulate-seqs \
+	--i-data ${data_set}-rep-seqs-or-99.qza \
+	--o-visualization ${data_set}-rep-seqs-or-99.qzv && \
+	qiime alignment mafft \
+	--i-sequences ${data_set}-rep-seqs-or-99.qza \
+	--o-alignment ${data_set}-aligned-rep-seqs-or-99.qza && \
+	qiime alignment mask \
+	--i-alignment ${data_set}-aligned-rep-seqs-or-99.qza \
+	--o-masked-alignment ${data_set}-masked-aligned-rep-seqs-or-99.qza && \
+	qiime phylogeny fasttree \
+	--i-alignment ${data_set}-masked-aligned-rep-seqs-or-99.qza \
+	--o-tree ${data_set}-unrooted-tree.qza && \
+	qiime phylogeny midpoint-root \
+	--i-tree ${data_set}-unrooted-tree.qza \
+	--o-rooted-tree ${data_set}-rooted-tree.qza && \
+	qiime diversity core-metrics-phylogenetic \
+	--i-phylogeny ${data_set}-rooted-tree.qza \
+	--i-table ${data_set}-table-or-99.qza \
+	--p-sampling-depth ${sampling_depth} \
+	--m-metadata-file $metadata_file_path \
+	--output-dir diversity-statistics && \
+	qiime feature-classifier classify-sklearn \
+	--i-reads ${data_set}-rep-seqs-or-99.qza \
+	--i-classifier $ref_tax \
+	--o-classification ${data_set}-taxonomy.qza && \
+	qiime metadata tabulate \
+	--m-input-file ${data_set}-taxonomy.qza \
+	--o-visualization ${data_set}-taxonomy.qzv && \
+	qiime taxa barplot \
+	--i-table diversity-statistics/rarefied_table.qza \
+	--i-taxonomy ${data_set}-taxonomy.qza \
+	--m-metadata-file $metadata_file_path \
+	--o-visualization ${data_set}-tax-bar-plots.qzv && \
+	qiime taxa collapse \
+        --i-table ${data_set}-table-or-99.qza \
+        --i-taxonomy ${data_set}-taxonomy.qza \
+        --p-level 1 \
+        --o-collapsed-table ${data_set}-table-collapsed1.qza && \
+        qiime feature-table relative-frequency \
+        --i-table ${data_set}-table-collapsed1.qza \
+        --o-relative-frequency-table ${data_set}-table1-frequency.qza && \
+        qiime tools export ${data_set}-table1-frequency.qza \
+        --output-dir frequency-tables && \
+        biom convert \
+        -i frequency-tables/feature-table.biom -o frequency-tables/level1-feature-table.tsv --to-tsv && \
+	qiime taxa collapse \
+        --i-table ${data_set}-table-or-99.qza \
+        --i-taxonomy ${data_set}-taxonomy.qza \
+        --p-level 2 \
+        --o-collapsed-table ${data_set}-table-collapsed2.qza && \
+        qiime feature-table relative-frequency \
+        --i-table ${data_set}-table-collapsed2.qza \
+        --o-relative-frequency-table ${data_set}-table2-frequency.qza && \
+        qiime tools export ${data_set}-table2-frequency.qza \
+        --output-dir frequency-tables && \
+        biom convert \
+        -i frequency-tables/feature-table.biom -o frequency-tables/level2-feature-table.tsv --to-tsv &&
+	qiime taxa collapse \
+	--i-table ${data_set}-table-or-99.qza \
+	--i-taxonomy ${data_set}-taxonomy.qza \
+	--p-level 3 \
+	--o-collapsed-table ${data_set}-table-collapsed3.qza && \
+	qiime feature-table relative-frequency \
+	--i-table ${data_set}-table-collapsed3.qza \
+	--o-relative-frequency-table ${data_set}-table3-frequency.qza && \
+	qiime tools export ${data_set}-table3-frequency.qza \
+	--output-dir frequency-tables && \
+	biom convert \
+	-i frequency-tables/feature-table.biom -o frequency-tables/level3-feature-table.tsv --to-tsv && \
+	qiime taxa collapse \
+        --i-table ${data_set}-table-or-99.qza \
+        --i-taxonomy ${data_set}-taxonomy.qza \
+        --p-level 4 \
+        --o-collapsed-table ${data_set}-table-collapsed4.qza && \
+        qiime feature-table relative-frequency \
+        --i-table ${data_set}-table-collapsed4.qza \
+        --o-relative-frequency-table ${data_set}-table4-frequency.qza && \
+        qiime tools export ${data_set}-table4-frequency.qza \
+        --output-dir frequency-tables && \
+        biom convert \
+        -i frequency-tables/feature-table.biom -o frequency-tables/level4-feature-table.tsv --to-tsv &&
+	qiime taxa collapse \
+        --i-table ${data_set}-table-or-99.qza \
+        --i-taxonomy ${data_set}-taxonomy.qza \
+        --p-level 5 \
+        --o-collapsed-table ${data_set}-table-collapsed5.qza && \
+        qiime feature-table relative-frequency \
+        --i-table ${data_set}-table-collapsed5.qza \
+        --o-relative-frequency-table ${data_set}-table5-frequency.qza && \
+        qiime tools export ${data_set}-table5-frequency.qza \
+        --output-dir frequency-tables && \
+        biom convert \
+        -i frequency-tables/feature-table.biom -o frequency-tables/level5-feature-table.tsv --to-tsv &&
+	qiime taxa collapse \
+        --i-table ${data_set}-table-or-99.qza \
+        --i-taxonomy ${data_set}-taxonomy.qza \
+        --p-level 6 \
+        --o-collapsed-table ${data_set}-table-collapsed6.qza && \
+        qiime feature-table relative-frequency \
+        --i-table ${data_set}-table-collapsed6.qza \
+        --o-relative-frequency-table ${data_set}-table6-frequency.qza && \
+        qiime tools export ${data_set}-table6-frequency.qza \
+        --output-dir frequency-tables && \
+        biom convert \
+        -i frequency-tables/feature-table.biom -o frequency-tables/level6-feature-table.tsv --to-tsv &&
+	qiime taxa collapse \
+        --i-table ${data_set}-table-or-99.qza \
+        --i-taxonomy ${data_set}-taxonomy.qza \
+        --p-level 7 \
+        --o-collapsed-table ${data_set}-table-collapsed7.qza && \
+        qiime feature-table relative-frequency \
+        --i-table ${data_set}-table-collapsed7.qza \
+        --o-relative-frequency-table ${data_set}-table7-frequency.qza && \
+        qiime tools export ${data_set}-table7-frequency.qza \
+        --output-dir frequency-tables && \
+        biom convert \
+        -i frequency-tables/feature-table.biom -o frequency-tables/level7-feature-table.tsv --to-tsv && \
+	mv frequency-tables relative-frequency-tables && \
+	apt-get update && \
+	apt-get install unzip && \
+	unzip ${data_set}-tax-bar-plots.qzv -d barplots && \
+	mkdir diversity-statistics/alpha-diversity && \
+        mkdir diversity-statistics/beta-diversity && mkdir frequency-tables && \
+        mv barplots/*/data/*.csv frequency-tables && \
+        mkdir artifacts && \
+        mv *.qza artifacts && \
+        mkdir visualizations && \
+        mv *.qzv visualizations && \
+        rm -r barplots && \
+        cd diversity-statistics && \
+        mv *emperor.qzv beta-diversity"
+
+docker run -i -v $mount $qiime /bin/sh -c " \
+        cd $artifacts_dir && \
+        qiime diversity alpha \
+        --i-table artifacts/${data_set}-table-or-99.qza \
+        --p-metric chao1 \
+        --o-alpha-diversity diversity-statistics/alpha-diversity/${data_set}-chao1.qza && \
+        qiime diversity alpha \
+        --i-table artifacts/${data_set}-table-or-99.qza \
+        --p-metric simpson \
+        --o-alpha-diversity diversity-statistics/alpha-diversity/${data_set}-simpson.qza && \
+        qiime diversity alpha \
+        --i-table artifacts/${data_set}-table-or-99.qza \
+        --p-metric shannon \
+        --o-alpha-diversity diversity-statistics/alpha-diversity/${data_set}-shannon.qza && \
+        cd diversity-statistics/alpha-diversity && \
+        qiime diversity alpha-group-significance \
+        --i-alpha-diversity ${data_set}-chao1.qza \
+        --m-metadata-file $metadata_file_path \
+        --o-visualization ${data_set}-chao1.qzv && \
+        qiime diversity alpha-group-significance \
+        --i-alpha-diversity ${data_set}-simpson.qza \
+        --m-metadata-file $metadata_file_path \
+        --o-visualization ${data_set}-simpson.qzv && \
+        qiime diversity alpha-group-significance \
+        --i-alpha-diversity ${data_set}-shannon.qza \
+        --m-metadata-file $metadata_file_path \
+        --o-visualization ${data_set}-shannon.qzv"

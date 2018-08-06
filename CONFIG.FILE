@@ -1,0 +1,42 @@
+# common ending to fastq files (i.e. .fastq or _001.fastq.gz)
+# everything after the 1/2 that identifies forward/reverse read if paired
+fastq_End="2_001.fastq.gz" 
+
+# beginning and end character position of fastq id contained in fastq file
+# i.e. L002738_S36_L001_R2_001.fastq.gz, ch_beg = 1 and ch_end = 7 -> L002738
+# the result should match to the data in $run_id_column_number
+ch_beg="1"
+ch_end="5"
+
+# different column in metadata file that has prefix to .fastq file (i.e. SRR...)
+run_id_column_number="2"
+
+# column in metadata file that will be used to create sample_id
+sample_id_column_number="1"
+
+# mounting for Docker
+mount="/mnt/ix2:/mnt/ix2"
+
+# path to fastq files
+data_files_path="/mnt/ix2/Sandbox/bigmonty/Jace_Project/Fastq"
+
+# path to metadata file (should be a .tsv); first column should be labeled sampleid or sample-id
+# characters in file must be letters, numbers, -, or . (avoid spaces)
+metadata_file_path="/mnt/ix2/Sandbox/bigmonty/Jace_Project/metadata-jace.txt"
+
+# directory where artifacts will be stored
+# directory should be writeable (chmod 777 directory)
+artifacts_dir="/mnt/ix2/Sandbox/bigmonty/Jace_Project/qiime-pipeline/reverse"
+
+# prefix for artifacts that identifies data set
+data_set="r-jace-16S"
+
+# percent identity desired
+percent="97"
+
+# path to reference sequences used to cluster 
+ref_seqs="/mnt/ix2/Sandbox/bigmonty/ref_greengenes/gg_qiime_inputs/${percent}_otus.qza"
+
+# path to reference taxonomy used to classify
+ref_tax="${percent}_ref-taxonomy.qza"
+
